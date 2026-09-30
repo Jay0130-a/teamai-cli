@@ -25,7 +25,9 @@ let origCopilotHome: string | undefined;
 const TEST_SESSION_ID = `test-session-${randomUUID()}`;
 
 beforeEach(async () => {
-  tmpDir = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-la-test-'));
+  tmpDir = fs.realpathSync.native(
+    await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-la-test-')),
+  );
   origHome = process.env.HOME;
   origCopilotHome = process.env.COPILOT_HOME;
   process.env.HOME = tmpDir;
