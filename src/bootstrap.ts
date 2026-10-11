@@ -25,7 +25,7 @@ import {
 import { readFileSafe, pathExists, ensureDir, writeFile } from './utils/fs.js';
 import { getRemoteUrl } from './utils/git.js';
 import { log } from './utils/logger.js';
-import { acquireLock, releaseLock } from './update.js';
+import { acquireLockResult, releaseLock } from './update.js';
 import { getMemberConfig, mergeMemberConfig } from './members.js';
 
 export type BootstrapResult = 'bootstrapped' | 'already' | 'skip';
@@ -230,8 +230,12 @@ export async function bootstrapSelfRepo(
   const { configPath } = pending;
 
   const lockPath = path.join(businessRepoRoot, '.teamai', BOOTSTRAP_LOCK_FILENAME);
-  const locked = await acquireLock(lockPath);
-  if (!locked) {
+  const lockResult = await acquireLockResult(lockPath);
+  if (lockResult.kind === 'notWritable') {
+    log.warn(lockResult.message);
+    return 'skip';
+  }
+  if (lockResult.kind !== 'acquired') {
     log.debug('[bootstrap] another bootstrap is in progress; skipping');
     return 'skip';
   }

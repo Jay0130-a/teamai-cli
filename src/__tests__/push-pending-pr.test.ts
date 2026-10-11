@@ -85,7 +85,7 @@ vi.mock('../providers/index.js', () => ({
 // Isolation: push() takes a real ~/.teamai/.sync-lock. Parallel vitest workers
 // sharing that path race and skip/error, so these tests mock the lock.
 vi.mock('../update.js', () => ({
-  acquireLock: vi.fn().mockResolvedValue(true),
+  acquireLockResult: vi.fn().mockResolvedValue({ kind: 'acquired' }),
   releaseLock: vi.fn().mockResolvedValue(undefined),
 }));
 

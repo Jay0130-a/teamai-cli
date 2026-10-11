@@ -21,7 +21,7 @@ import { z } from 'zod';
 import { ENV_KEY_RE, envTable, envValue } from './resources/env-key.js';
 import { isRepoReference } from './models/profile.js';
 import { getTeamaiHomeDir, type LocalConfig } from './types.js';
-import { acquireLock, releaseLock } from './update.js';
+import { acquireLockResult, releaseLock } from './update.js';
 import { writeJsonAtomic } from './utils/fs.js';
 
 const StoredEntryKindSchema = z.enum(['secret', 'variable']);
@@ -193,7 +193,11 @@ export async function updateSecretStore(
   const lock = `${filePath}.lock`;
   let held = false;
   for (let attempt = 0; attempt < 100 && !held; attempt++) {
-    held = await acquireLock(lock);
+    const lockResult = await acquireLockResult(lock);
+    if (lockResult.kind === 'notWritable') {
+      return { kind: 'failed', reason: lockResult.message };
+    }
+    held = lockResult.kind === 'acquired';
     if (!held) await new Promise((resolve) => setTimeout(resolve, 50));
   }
   if (!held) {

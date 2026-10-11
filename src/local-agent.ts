@@ -115,7 +115,7 @@ import {
 } from './git-exclude-notices.js';
 import { blockingEntries, contentHash, deliveredSkillFiles, describeMembersDirLeft, isLink, keepsTrackedCopy, ownsSkillDir } from './resources/delivered-copies.js';
 import { skillOrigin, withSkillFrontmatter } from './resources/skills.js';
-import { acquireLock, releaseLock } from './update.js';
+import { acquireLockResult, releaseLock } from './update.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -367,11 +367,13 @@ async function holdsParentLocalAgentLock(): Promise<boolean> {
 }
 
 async function acquireLocalAgentLock(waitMs = 0): Promise<boolean> {
-  if (await acquireLock(localAgentLockPath())) return true;
+  let lockResult = await acquireLockResult(localAgentLockPath());
+  if (lockResult.kind === 'acquired') return true;
   const deadline = Date.now() + waitMs;
-  while (Date.now() < deadline) {
+  while (lockResult.kind !== 'notWritable' && Date.now() < deadline) {
     await new Promise((resolve) => setTimeout(resolve, 100));
-    if (await acquireLock(localAgentLockPath())) return true;
+    lockResult = await acquireLockResult(localAgentLockPath());
+    if (lockResult.kind === 'acquired') return true;
   }
   return false;
 }

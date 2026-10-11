@@ -39,12 +39,19 @@ export async function withVotesLock<T>(
   votePath: string,
   fn: () => Promise<T>,
 ): Promise<LockedResult<T>> {
-  const { acquireLock, releaseLock } = await import('./update.js');
+  const { acquireLockResult, releaseLock } = await import('./update.js');
   const lockPath = `${votePath}.lock`;
   const maxAttempts = 25; // ~2.5s total at 100ms
   let held = false;
   for (let i = 0; i < maxAttempts; i++) {
-    if (await acquireLock(lockPath)) { held = true; break; }
+    const lockResult = await acquireLockResult(lockPath);
+    if (lockResult.kind === 'acquired') { held = true; break; }
+    // A lock the filesystem will never create is not contention: name it and
+    // stop polling right away (#999).
+    if (lockResult.kind === 'notWritable') {
+      log.warn(lockResult.message);
+      break;
+    }
     await new Promise((r) => setTimeout(r, 100));
   }
   if (!held) {

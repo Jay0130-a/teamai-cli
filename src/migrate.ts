@@ -6,7 +6,7 @@ import { getRemoteUrl, resolveAnchors } from './utils/git.js';
 import { resolvePartitionDir, writeAnchorFile } from './utils/partition.js';
 import { realpath } from 'node:fs/promises';
 import { expandHome, listFilesRecursive, pathExists, readFileIfExists, readFileSafe, remove, writeFile } from './utils/fs.js';
-import { acquireLock, releaseLock } from './update.js';
+import { acquireLockResult, releaseLock } from './update.js';
 import { detectProjectConfig, readConfigFrom } from './config.js';
 import { getUserHome } from './utils/home.js';
 import { log } from './utils/logger.js';
@@ -405,7 +405,12 @@ export async function runMigration(
   }
 
   const lockPath = path.join(legacyDir, SYNC_LOCK_FILENAME);
-  if (!(await acquireLock(lockPath))) {
+  const lockResult = await acquireLockResult(lockPath);
+  if (lockResult.kind === 'notWritable') {
+    log.warn(lockResult.message);
+    return 'busy';
+  }
+  if (lockResult.kind !== 'acquired') {
     log.debug('migration skipped: a concurrent pull/push holds the sync lock');
     return 'busy';
   }

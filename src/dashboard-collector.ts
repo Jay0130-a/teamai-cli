@@ -10,7 +10,7 @@ import { repoKeys, repoLabel } from './utils/repo-attribution.js';
 import { isProcessAlive, resolveMonitorPid } from './pid-monitor.js';
 import { normalizeToolName } from './utils/tool-names.js';
 import { redactWithEnv } from './utils/redact.js';
-import { acquireLock, releaseLock } from './update.js';
+import { acquireLockResult, releaseLock } from './update.js';
 import {
   DASHBOARD_COMPACTION_THRESHOLD,
   DASHBOARD_IDLE_TIMEOUT_MS,
@@ -1537,7 +1537,12 @@ async function withEventsLock(
 ): Promise<boolean> {
   const lockPath = `${eventsPath}.lock`;
   for (let i = 0; i < wait.attempts; i++) {
-    if (await acquireLock(lockPath)) {
+    const lockResult = await acquireLockResult(lockPath);
+    if (lockResult.kind === 'notWritable') {
+      log.warn(lockResult.message);
+      break;
+    }
+    if (lockResult.kind === 'acquired') {
       try {
         await foldPendingEvents(eventsPath);
         await fn();

@@ -69,7 +69,7 @@ import { declaredSecretKeys } from './resources/secrets.js';
 import { envShVariables, resolveTeamEnv, variablesKeptWarning, type TeamEnv } from './env-resolution.js';
 import { describeEnvAdvisory, envAdvisories } from './env-advisories.js';
 import { getUserHome } from './utils/home.js';
-import { acquireLock, releaseLock } from './update.js';
+import { acquireLockResult, releaseLock } from './update.js';
 import { mirrorLearnings } from './utils/learnings-mirror.js';
 import { withTimeout } from './utils/async.js';
 import { runDeclaredPostPull } from './post-pull.js';
@@ -2621,14 +2621,28 @@ export async function pull(
     // may be a detached pull hung on the network.
     const lockWaitMs = options.fetchTimeoutMs ?? INLINE_LOCK_WAIT_MS;
     const waitUntil = options.inline ? Date.now() + lockWaitMs : 0;
-    let acquired = await acquireLock(lock, { dryRun: options.dryRun });
-    while (!acquired && Date.now() < waitUntil) {
+    // A lock the filesystem will never let this pull create is named and
+    // reported as an error, never as contention (#999): retrying against it is
+    // pointless, and the "another pull/push holds the lock" line would point
+    // at a process that does not exist. `acquireLockResult` stops the retry
+    // loop below on that verdict.
+    let lockResult = await acquireLockResult(lock, { dryRun: options.dryRun });
+    while (lockResult.kind !== 'acquired' && lockResult.kind !== 'notWritable' && Date.now() < waitUntil) {
       await new Promise((resolve) => setTimeout(resolve, 200));
-      acquired = await acquireLock(lock, { dryRun: options.dryRun });
+      lockResult = await acquireLockResult(lock, { dryRun: options.dryRun });
     }
-    if (acquired) {
+    if (lockResult.kind === 'acquired') {
       if (!options.dryRun) heldLocks.set(config, lock);
       return true;
+    }
+    if (lockResult.kind === 'notWritable') {
+      log.error(`[${config.scope}] ${lockResult.message}`);
+      startupErrors.push(`[${config.scope}] ${lockResult.message}`);
+      // Same exclusion as contention: every later stage loads the shared
+      // clone or writes machine data it must not while this scope is skipped.
+      contended.add(config);
+      process.exitCode = 1;
+      return false;
     }
     // User-visible: this scope is skipped wholesale (no fetch/deploy/reconcile),
     // so a plain success line would be misleading. Idempotent — the next pull

@@ -21,7 +21,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { ensureDir, writeFileAtomic } from './utils/fs.js';
-import { acquireLock, releaseLock } from './update.js';
+import { acquireLockResult, releaseLock } from './update.js';
 import { redactWithEnv } from './utils/redact.js';
 import { aggregateSessionMetrics } from './dashboard-collector.js';
 import { repoKeys, repoLabel } from './utils/repo-attribution.js';
@@ -196,12 +196,18 @@ export async function appendMonthlyLog(
   const marker = `<!-- teamai:session ${summary.sessionId} -->`;
   const lockPath = `${file}.lock`;
   const deadline = Date.now() + 5_000;
-  while (!(await acquireLock(lockPath))) {
+  let lockResult = await acquireLockResult(lockPath);
+  while (lockResult.kind !== 'acquired') {
+    // No amount of waiting repairs a lock the filesystem will never create.
+    if (lockResult.kind === 'notWritable') {
+      throw new Error(`Cannot lock session log ${file}: ${lockResult.message}`);
+    }
     const remaining = deadline - Date.now();
     if (remaining <= 0) {
       throw new Error(`Cannot lock session log ${file}. Retry teamai session save later.`);
     }
     await new Promise((resolve) => setTimeout(resolve, Math.min(50, remaining)));
+    lockResult = await acquireLockResult(lockPath);
   }
 
   try {

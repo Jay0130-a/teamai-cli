@@ -38,6 +38,24 @@ vi.mock('fs-extra', () => ({
   },
 }));
 
+vi.mock('../git-exclude.js', async () => {
+  const { default: nodePath } = await import('node:path');
+  class NotWritableError extends Error {
+    constructor(
+      readonly file: string,
+      readonly blocker: string,
+      readonly notDirectory: boolean,
+    ) {
+      super(`${file} is not writable, as ${blocker} is not${notDirectory ? ' a directory' : ''}`);
+      this.name = 'NotWritableError';
+    }
+  }
+  return {
+    NotWritableError,
+    existingAncestor: vi.fn(async (file: string) => nodePath.dirname(file)),
+  };
+});
+
 vi.mock('../config.js', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../config.js')>()),
   loadState: vi.fn(),
@@ -96,6 +114,7 @@ import path from 'node:path';
 import { loadState, saveState, loadLocalConfig, loadTeamConfig } from '../config.js';
 import { log } from '../utils/logger.js';
 import { askConfirmation } from '../utils/prompt.js';
+import { ensureDir } from '../utils/fs.js';
 
 import {
   getCurrentVersion,
@@ -103,6 +122,7 @@ import {
   compareVersions,
   isCacheValid,
   acquireLock,
+  acquireLockResult,
   releaseLock,
   checkForUpdate,
   doUpdate,
@@ -811,6 +831,42 @@ describe('acquireLock', () => {
 
     expect(result).toBe(false);
     expect(mockedFse.rename).not.toHaveBeenCalled();
+  });
+});
+
+describe('acquireLockResult — three-way verdict (#999)', () => {
+  it('says acquired when the lock is created', async () => {
+    mockedFse.link.mockResolvedValue(undefined);
+    await expect(acquireLockResult('/tmp/result-lock')).resolves.toEqual({ kind: 'acquired' });
+  });
+
+  it('says busy for a live holder, not notWritable', async () => {
+    mockedFse.link.mockImplementation((_tmp: string, target: string) =>
+      target === '/tmp/test-lock' ? Promise.reject(eexist()) : Promise.resolve(undefined));
+    mockedFse.readFile.mockResolvedValue(JSON.stringify({ pid: process.pid, owner: 'x' }));
+
+    await expect(acquireLockResult('/tmp/test-lock')).resolves.toEqual({ kind: 'busy' });
+  });
+
+  it('names the path and errno when the lock directory cannot be created', async () => {
+    vi.mocked(ensureDir).mockRejectedValueOnce(Object.assign(new Error('EACCES'), { code: 'EACCES' }));
+
+    const result = await acquireLockResult('/tmp/readonly/test-lock');
+
+    expect(result).toEqual({
+      kind: 'notWritable',
+      path: '/tmp/readonly/test-lock',
+      message: '/tmp/readonly/test-lock is not writable (EACCES)',
+    });
+  });
+
+  it('names the blocker when a parent file stands in the way', async () => {
+    mockedFse.writeFile.mockRejectedValueOnce(Object.assign(new Error('ENOTDIR'), { code: 'ENOTDIR' }));
+
+    const result = await acquireLockResult('/tmp/test-lock');
+
+    expect(result.kind).toBe('notWritable');
+    expect((result as { message: string }).message).toContain('is not a directory');
   });
 });
 

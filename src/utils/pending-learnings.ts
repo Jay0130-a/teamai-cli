@@ -6,7 +6,7 @@ import YAML from 'yaml';
 import { ensureDir, expandHome, listFilesRecursive, readFileSafe } from './fs.js';
 import { normalizeRepoUrlForCompare, redactGitCredentials, remotesMatch } from './git.js';
 import { log } from './logger.js';
-import { acquireLock, releaseLock } from '../update.js';
+import { acquireLockResult, releaseLock } from '../update.js';
 import { getDataHome, getTeamaiHomeDir, isSelfMode, LocalConfigSchema, type LocalConfig } from '../types.js';
 
 /**
@@ -74,7 +74,12 @@ export async function acquireQueueLock(
 ): Promise<{ acquired: boolean; lockPath: string }> {
   const lockPath = await queueLockPath(home);
   for (let attempt = 1; ; attempt++) {
-    if (await acquireLock(lockPath, options)) return { acquired: true, lockPath };
+    const lockResult = await acquireLockResult(lockPath, options);
+    if (lockResult.kind === 'notWritable') {
+      log.warn(lockResult.message);
+      return { acquired: false, lockPath };
+    }
+    if (lockResult.kind === 'acquired') return { acquired: true, lockPath };
     if (attempt === QUEUE_LOCK_ATTEMPTS) return { acquired: false, lockPath };
     await new Promise((resolve) => setTimeout(resolve, QUEUE_LOCK_RETRY_MS));
   }

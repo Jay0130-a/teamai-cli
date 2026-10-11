@@ -29,7 +29,7 @@ import path from 'node:path';
 import fse from 'fs-extra';
 import type { SimpleGit } from 'simple-git';
 import { createGit, isGitRepo, commitSkippingHooks, isDedicatedRepoRoot } from './git.js';
-import { acquireLock, releaseLock } from '../update.js';
+import { acquireLockResult, releaseLock } from '../update.js';
 import { ensureDir, writeFile, pathExists } from './fs.js';
 import { isSilent, log } from './logger.js';
 import {
@@ -627,8 +627,12 @@ async function commitAndPushImpl(
   options: { pushIfUnchanged?: boolean } = {},
 ): Promise<PublishResult> {
   const lockPath = lockFilePath(spec, localConfig);
-  const locked = await acquireLock(lockPath);
-  if (!locked) {
+  const lockResult = await acquireLockResult(lockPath);
+  if (lockResult.kind === 'notWritable') {
+    log.warn(`[${spec.logTag}] ${lockResult.message}`);
+    return { status: 'busy' };
+  }
+  if (lockResult.kind !== 'acquired') {
     log.debug(`[${spec.logTag}] another write is in progress; skipping`);
     return { status: 'busy' };
   }
@@ -662,7 +666,12 @@ async function updateImpl(
   }
 
   const lockPath = lockFilePath(spec, localConfig);
-  if (!(await acquireLock(lockPath))) {
+  const lockResult = await acquireLockResult(lockPath);
+  if (lockResult.kind === 'notWritable') {
+    log.warn(`[${spec.logTag}] ${lockResult.message}`);
+    return { status: 'busy' };
+  }
+  if (lockResult.kind !== 'acquired') {
     log.debug(`[${spec.logTag}] another write is in progress; skipping`);
     return { status: 'busy' };
   }
@@ -988,7 +997,12 @@ async function refreshImpl(
   const lockPath = lockFilePath(spec, localConfig);
   let locked = false;
   try {
-    locked = await acquireLock(lockPath);
+    const lockResult = await acquireLockResult(lockPath);
+    if (lockResult.kind === 'notWritable') {
+      log.warn(`[${spec.logTag}] ${lockResult.message}`);
+      return { status: 'busy', lockPath };
+    }
+    locked = lockResult.kind === 'acquired';
     if (!locked) {
       // Every checkout of a self-mode repo shares this path (#808): the holder
       // may be creating it right now.

@@ -22,7 +22,7 @@ import type {
   GlobalOptions, ResourceItem, ResourceType, LocalConfig, TeamaiConfig, State,
 } from './types.js';
 import { getDataHome, SELF_KNOWLEDGE_SCAN_KEY, SYNC_LOCK_FILENAME } from './types.js';
-import { acquireLock, releaseLock } from './update.js';
+import { acquireLockResult, releaseLock } from './update.js';
 import { assertSafeResourceName } from './utils/path-safety.js';
 import { loadRolesManifest, resolveRoleResourceNamespaces, RolesManifestNotFoundError } from './roles.js';
 import type { ProjectsManifest } from './projects.js';
@@ -849,7 +849,16 @@ export async function push(
     // it (#866), so the preview contends on exactly what a real push would, and
     // leaves no partition directory behind.
     const selfSyncLock = path.join(getDataHome(localConfig), SYNC_LOCK_FILENAME);
-    if (!(await acquireLock(selfSyncLock, { dryRun: options.dryRun }))) {
+    // A lock the filesystem cannot create is not contention: name the path and
+    // reason and still fail, because dropping the user's changes is not safe
+    // on either verdict (#999).
+    const selfLock = await acquireLockResult(selfSyncLock, { dryRun: options.dryRun });
+    if (selfLock.kind === 'notWritable') {
+      log.error(selfLock.message);
+      process.exitCode = 1;
+      return;
+    }
+    if (selfLock.kind !== 'acquired') {
       log.error('Another teamai pull/push/migration is in progress for this project. Re-run once it finishes.');
       process.exitCode = 1;
       return;
@@ -904,8 +913,13 @@ export async function push(
   // skip (that would drop the user's changes), so on contention we error out.
   const syncLock = path.join(getDataHome(localConfig), SYNC_LOCK_FILENAME);
   // Read-only acquisition under a dry run, exactly as the self-mode branch above.
-  const locked = await acquireLock(syncLock, { dryRun: options.dryRun });
-  if (!locked) {
+  const lockResult = await acquireLockResult(syncLock, { dryRun: options.dryRun });
+  if (lockResult.kind === 'notWritable') {
+    log.error(lockResult.message);
+    process.exitCode = 1;
+    return;
+  }
+  if (lockResult.kind !== 'acquired') {
     log.error('Another teamai pull/push is in progress for this project. Re-run once it finishes.');
     process.exitCode = 1;
     return;

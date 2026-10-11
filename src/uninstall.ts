@@ -1793,11 +1793,17 @@ async function dropToolGitExcludePaths(
 /** The partition's sync lock, as pull and push take it; null when the scope has none (HTTP). */
 async function takeSyncLock(localConfig: LocalConfig): Promise<string | null | false> {
   if (localConfig.repo.kind === 'http') return null;
-  const { acquireLock } = await import('./update.js');
+  const { acquireLockResult } = await import('./update.js');
   const lock = path.join(getDataHome(localConfig), SYNC_LOCK_FILENAME);
   // A pull a git hook or session start left running finishes soon.
   for (let attempt = 0; attempt < 50; attempt++) {
-    if (await acquireLock(lock)) return lock;
+    const lockResult = await acquireLockResult(lock);
+    if (lockResult.kind === 'acquired') return lock;
+    // Name the real cause instead of retrying a lock that can never appear.
+    if (lockResult.kind === 'notWritable') {
+      log.warn(lockResult.message);
+      return false;
+    }
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
   return false;

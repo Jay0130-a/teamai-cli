@@ -5,7 +5,7 @@ import YAML from 'yaml';
 import { parse as parseToml } from 'smol-toml';
 import { getUserHome } from '../utils/home.js';
 import { pathExists, writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
-import { acquireLock, releaseLock } from '../update.js';
+import { acquireLockResult, releaseLock } from '../update.js';
 import { entryHash } from '../resources/mcp-format.js';
 import type { LocalConfig } from '../types.js';
 import { ALL_MODEL_AGENTS, type ModelAgent, type ModelProtocol, type ResolvedModelProfile, sameTeamIdentity } from './profile.js';
@@ -73,7 +73,9 @@ async function withManifestLock<T>(run: () => Promise<T>): Promise<T> {
   const file = `${manifestPath()}.lock`;
   let acquired = false;
   for (let attempt = 0; attempt < 100; attempt++) {
-    if (await acquireLock(file)) { acquired = true; break; }
+    const lockResult = await acquireLockResult(file);
+    if (lockResult.kind === 'notWritable') throw new Error(lockResult.message);
+    if (lockResult.kind === 'acquired') { acquired = true; break; }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
   if (!acquired) throw new Error('Another model operation is in progress; retry shortly');

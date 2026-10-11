@@ -19,7 +19,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { acquireLock, releaseLock } from '../update.js';
+import { acquireLockResult, releaseLock } from '../update.js';
 import { ensureDir } from './fs.js';
 import { log } from './logger.js';
 
@@ -160,7 +160,12 @@ async function withLock(filePath: string, wait: LockWait, mode: number, fn: () =
   // and 100 late sleeps blow past the budget this wait promises.
   const deadline = Date.now() + wait.budgetMs;
   for (;;) {
-    if (await acquireLock(lockPath)) {
+    const lockResult = await acquireLockResult(lockPath);
+    if (lockResult.kind === 'notWritable') {
+      log.warn(lockResult.message);
+      return false;
+    }
+    if (lockResult.kind === 'acquired') {
       try {
         await foldSideRecords(filePath, mode);
         await fn();

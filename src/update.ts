@@ -5,6 +5,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import fse from 'fs-extra';
+import { NotWritableError, existingAncestor } from './git-exclude.js';
 import { loadState, saveState, loadLocalConfig, loadTeamConfig } from './config.js';
 import { resolveEffectiveUpdatePolicy } from './update-policy.js';
 import { resolveTeamaiEntryScript } from './builtin-hooks.js';
@@ -365,7 +366,44 @@ async function acquireReclaimSentinel(sentinel: string, owner: string): Promise<
 }
 
 /**
- * Try to acquire a lock. Returns false if another live process holds it.
+ * FS errors that mean the lock could not be created at all, as opposed to
+ * already existing: a parent path in the way (ENOTDIR/EEXIST), an unwritable
+ * directory (EACCES/EPERM/EROFS), or a full disk (ENOSPC). Before #999 every
+ * one of these read as `false` and every caller printed "another process
+ * holds the lock", when in fact no process does and retrying cannot help.
+ */
+const LOCK_NOT_WRITABLE_CODES = new Set(['ENOTDIR', 'EACCES', 'EPERM', 'EROFS', 'ENOSPC']);
+
+/**
+ * A lock attempt's outcome, split so a caller can tell contention from an
+ * environment that will never let the lock be created. `notWritable` names
+ * the lock path and the concrete reason (the closest existing path above it
+ * when a parent is in the way, otherwise the errno); before this the issue's
+ * reproduction reported the same condition as "another pull/push holds the
+ * lock" and exited 0.
+ */
+export type LockResult =
+  | { kind: 'acquired' }
+  | { kind: 'busy' }
+  | { kind: 'notWritable'; path: string; message: string };
+
+/** Build the not-writable verdict for a lock that could not be created. */
+async function notWritableResult(resolved: string, err: NodeJS.ErrnoException): Promise<LockResult> {
+  const notDirectory = err.code === 'ENOTDIR' || err.code === 'EEXIST';
+  const blocker = await existingAncestor(resolved);
+  return {
+    kind: 'notWritable',
+    path: resolved,
+    message: notDirectory
+      ? new NotWritableError(resolved, blocker, true).message
+      : `${resolved} is not writable (${err.code ?? err.message})`,
+  };
+}
+
+/**
+ * Try to acquire a lock and say how it failed: `acquired`, `busy` (a live
+ * process owns it), or `notWritable` (the lock cannot be created here at all;
+ * the verdict names the path and reason).
  *
  * The happy path is a single atomic exclusive create (a fully written temp file
  * hard-linked to the lock name, or O_CREAT|O_EXCL without hard links), so exactly
@@ -379,10 +417,10 @@ async function acquireReclaimSentinel(sentinel: string, owner: string): Promise<
  * residual window exists only if the reclaiming process itself dies mid-reclaim:
  * stealing its dead-pid sentinel is not yet race-free, see #760.)
  */
-export async function acquireLock(
+export async function acquireLockResult(
   lockPath?: string,
   options: { dryRun?: boolean } = {},
-): Promise<boolean> {
+): Promise<LockResult> {
   const resolved = lockPath ?? expandHome(getUpdateLockPath());
   // A preview does not take the lock, because taking one is itself a write:
   // `ensureDir` below creates the lock's parent directory, which a fresh
@@ -392,7 +430,9 @@ export async function acquireLock(
   // it reads the lock's state instead of creating it: a live holder means the
   // real run would have reported contention, anything else means it would have
   // won. No owner is recorded, so `releaseLock` has nothing to undo.
-  if (options.dryRun) return (await lockState(resolved)) !== 'live';
+  if (options.dryRun) {
+    return (await lockState(resolved)) !== 'live' ? { kind: 'acquired' } : { kind: 'busy' };
+  }
   const owner = randomUUID();
   const payload = JSON.stringify({
     pid: process.pid,
@@ -402,8 +442,8 @@ export async function acquireLock(
 
   try {
     await ensureDir(path.dirname(resolved));
-  } catch {
-    return false;
+  } catch (e) {
+    return notWritableResult(resolved, e as NodeJS.ErrnoException);
   }
 
   try {
@@ -412,21 +452,21 @@ export async function acquireLock(
     const first = await createOrInspect(resolved, payload);
     if (first === 'acquired') {
       heldLockOwners.set(resolved, owner);
-      return true;
+      return { kind: 'acquired' };
     }
-    if (first === 'live') return false;
+    if (first === 'live') return { kind: 'busy' };
 
     // Serialize the reclaim so only one process takes over the stale lock.
     const sentinel = `${resolved}.sentinel`;
-    if (!(await acquireReclaimSentinel(sentinel, owner))) return false;
+    if (!(await acquireReclaimSentinel(sentinel, owner))) return { kind: 'busy' };
     try {
       // Re-evaluate now that we are the sole reclaimer.
       const second = await createOrInspect(resolved, payload);
       if (second === 'acquired') {
         heldLockOwners.set(resolved, owner);
-        return true; // stale lock had vanished
+        return { kind: 'acquired' }; // stale lock had vanished
       }
-      if (second === 'live') return false; // became live under us
+      if (second === 'live') return { kind: 'busy' }; // became live under us
       // Still stale and present, and no other reclaimer can race us: replace it
       // atomically (write to a temp sibling, then rename over the stale file, so
       // the lock is never momentarily absent for a fresh acquirer to slip into).
@@ -434,13 +474,32 @@ export async function acquireLock(
       await fse.writeFile(tmp, payload);
       await fse.rename(tmp, resolved);
       heldLockOwners.set(resolved, owner);
-      return true;
+      return { kind: 'acquired' };
     } finally {
       await removeIfOwner(sentinel, owner);
     }
-  } catch {
-    return false;
+  } catch (e) {
+    const err = e as NodeJS.ErrnoException;
+    // The EEXIST cases are handled inside exclusiveCreate (the lock already
+    // exists); only the codes that mean the lock cannot be created at all are
+    // classified as not-writable here.
+    if (LOCK_NOT_WRITABLE_CODES.has(err.code ?? '')) {
+      return notWritableResult(resolved, err);
+    }
+    return { kind: 'busy' };
   }
+}
+
+/**
+ * Try to acquire a lock. Returns false when another live process holds it OR
+ * when the lock cannot be created here at all. Callers that need to tell the
+ * two apart use acquireLockResult instead (issue #999).
+ */
+export async function acquireLock(
+  lockPath?: string,
+  options: { dryRun?: boolean } = {},
+): Promise<boolean> {
+  return (await acquireLockResult(lockPath, options)).kind === 'acquired';
 }
 
 /**
@@ -588,8 +647,12 @@ export async function doUpdate(): Promise<void> {
   }
 
   // auto policy or user confirmed — proceed with install
-  const locked = await acquireLock();
-  if (!locked) {
+  const lock = await acquireLockResult();
+  if (lock.kind === 'notWritable') {
+    log.warn(lock.message);
+    return;
+  }
+  if (lock.kind !== 'acquired') {
     log.warn('Another update is in progress, skipping');
     return;
   }

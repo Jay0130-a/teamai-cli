@@ -34,7 +34,7 @@ import { blobIdOf, historicalVersions } from './utils/team-history.js';
 import { resolveOpenclawStateDir, resolveOpenclawWorkspace, resolveOpenclawWorkspaceDir } from './openclaw-hooks.js';
 import { BUILTIN_SKILL_NAMES, LEGACY_BUILTIN_SKILL_NAMES } from './builtin-skills.js';
 import { getUserHome } from './utils/home.js';
-import { acquireLock, releaseLock } from './update.js';
+import { acquireLockResult, releaseLock } from './update.js';
 import { assertSafeResourceName, assertWithinRoot } from './utils/path-safety.js';
 import type {
   TeamaiConfig,
@@ -54,7 +54,9 @@ function sourceLockPath(): string {
 
 async function withSourceLock(options: GlobalOptions, action: () => Promise<void>): Promise<void> {
   const lock = sourceLockPath();
-  if (!await acquireLock(lock, { dryRun: options.dryRun })) {
+  const lockResult = await acquireLockResult(lock, { dryRun: options.dryRun });
+  if (lockResult.kind === 'notWritable') throw new Error(lockResult.message);
+  if (lockResult.kind !== 'acquired') {
     throw new Error('Could not acquire the shared source lock. Retry after other source operations finish and check cache permissions.');
   }
   try {
@@ -1315,8 +1317,12 @@ function hasNestedSourceOwner(skill: string, manifest: SourceInstallManifest, ba
 export async function getSourcePathOwners(currentManifest?: string): Promise<SourcePathOwner[]> {
   // Public push readers must not inspect a source transaction in progress.
   // Mutation callers already hold the lock and pass their current manifest.
-  if (!currentManifest && !await acquireLock(sourceLockPath(), { dryRun: true })) {
-    throw new Error('Source ownership is being updated; retry skill push after it finishes.');
+  if (!currentManifest) {
+    const lockResult = await acquireLockResult(sourceLockPath(), { dryRun: true });
+    if (lockResult.kind === 'notWritable') throw new Error(lockResult.message);
+    if (lockResult.kind !== 'acquired') {
+      throw new Error('Source ownership is being updated; retry skill push after it finishes.');
+    }
   }
   const owners: SourcePathOwner[] = [];
   for (const name of await listSourceNames()) {

@@ -7,7 +7,7 @@ import type { LocalConfig } from '../types.js';
 import { getTeamaiHomeDir } from '../types.js';
 import { repoIdentity } from '../utils/git.js';
 import { writeFileAtomic, writeJsonAtomic } from '../utils/fs.js';
-import { acquireLock, releaseLock } from '../update.js';
+import { acquireLockResult, releaseLock } from '../update.js';
 import { caseFoldKey } from '../manifest-schema.js';
 import {
   listEntryFiles,
@@ -637,7 +637,9 @@ export async function saveModelInputs(filePath: string, values: StoredModelInput
 export async function withTeamValuesLock<T>(filePath: string, run: () => Promise<T>): Promise<T> {
   const lockPath = `${filePath}.lock`;
   for (let attempt = 0; attempt < 100; attempt++) {
-    if (await acquireLock(lockPath)) {
+    const lockResult = await acquireLockResult(lockPath);
+    if (lockResult.kind === 'notWritable') throw new Error(lockResult.message);
+    if (lockResult.kind === 'acquired') {
       try { return await run(); }
       finally { await releaseLock(lockPath); }
     }

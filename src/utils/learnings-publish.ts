@@ -26,7 +26,7 @@ import {
   readPendingLearning,
   savePendingLearning,
 } from './pending-learnings.js';
-import { acquireLock, releaseLock } from '../update.js';
+import { acquireLockResult, releaseLock } from '../update.js';
 import { getDataHome, SYNC_LOCK_FILENAME, type LocalConfig } from '../types.js';
 
 export interface PublishQueueReport {
@@ -75,7 +75,14 @@ export async function publishQueuedLearnings(
   // what a real run would get instead, so nothing is created and nothing is
   // left behind (#866).
   const syncLock = options.holdsSyncLock ? null : syncLockPath(localConfig);
-  const locked = syncLock === null || await acquireLock(syncLock, { dryRun: options.dryRun });
+  let locked = syncLock === null;
+  if (syncLock) {
+    const lockResult = await acquireLockResult(syncLock, { dryRun: options.dryRun });
+    // Same non-blocking fallback as contention, but the message names the
+    // path and reason instead of pretending another process holds the lock.
+    if (lockResult.kind === 'acquired') locked = true;
+    else if (lockResult.kind === 'notWritable') log.warn(lockResult.message);
+  }
   try {
     return await publishUnderSyncLock(localConfig, username, locked, options.dryRun === true);
   } finally {

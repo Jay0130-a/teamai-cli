@@ -85,11 +85,14 @@ export async function setCodexDispatcherHooks(project: string, hooks: CodexTeamH
   const seen = (await readIndex()).projects[project];
   if (hooks === null ? seen === undefined : JSON.stringify(seen?.hooks) === JSON.stringify(hooks)) return true;
   const lock = `${file}.lock`;
-  const { acquireLock, releaseLock } = await import('./update.js');
+  const { acquireLockResult, releaseLock } = await import('./update.js');
   const deadline = Date.now() + 3_000;
-  while (!await acquireLock(lock)) {
-    if (Date.now() >= deadline) return false;
+  let lockResult = await acquireLockResult(lock);
+  while (lockResult.kind !== 'acquired') {
+    // A lock the filesystem cannot create will not appear in 3s either (#999).
+    if (lockResult.kind === 'notWritable' || Date.now() >= deadline) return false;
     await new Promise((resolve) => setTimeout(resolve, 50));
+    lockResult = await acquireLockResult(lock);
   }
   try {
     const index = await readIndex();
