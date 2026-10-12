@@ -298,6 +298,51 @@ describe('ZCode support', () => {
     }
   });
 
+  it('preserves a hand-raised hooks.maxOutputBytes across a reconcile (#1049)', async () => {
+    const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-zcode-test-'));
+    try {
+      const configPath = path.join(home, '.zcode', 'cli', 'config.json');
+      await fse.ensureDir(path.dirname(configPath));
+      await fse.writeJson(configPath, {
+        plugins: {},
+        hooks: { enabled: true, maxOutputBytes: 262144, events: {} },
+      });
+
+      await reconcileHooks(configPath, 'zcode');
+
+      const cfg = await fse.readJson(configPath);
+      // The cap survives, so a team whose rules outgrew the 32768 default is not
+      // silently reset on the next `hooks inject` / `pull` / `init`.
+      expect(cfg.hooks.maxOutputBytes).toBe(262144);
+      expect(cfg.hooks.enabled).toBe(true);
+      expect(await getHookStatus(configPath, 'zcode')).toBe('installed');
+    } finally {
+      await fse.remove(home);
+    }
+  });
+
+  it('still heals a maxOutputBytes that is not a byte count', async () => {
+    const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-zcode-test-'));
+    try {
+      const configPath = path.join(home, '.zcode', 'cli', 'config.json');
+      await fse.ensureDir(path.dirname(configPath));
+      // A typo is not a setting: keeping it would keep the whole hooks block
+      // invalid, which is the failure the heal exists to prevent.
+      await fse.writeJson(configPath, {
+        plugins: {},
+        hooks: { enabled: true, maxOutputBytes: 'big', events: {} },
+      });
+
+      await reconcileHooks(configPath, 'zcode');
+
+      const cfg = await fse.readJson(configPath);
+      expect(Object.keys(cfg.hooks).sort()).toEqual(['enabled', 'events']);
+      expect(await getHookStatus(configPath, 'zcode')).toBe('installed');
+    } finally {
+      await fse.remove(home);
+    }
+  });
+
   it('honors an explicitly configured timeout over the per-event ZCode default', async () => {
     const home = await fse.mkdtemp(path.join(os.tmpdir(), 'teamai-zcode-test-'));
     try {

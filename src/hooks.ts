@@ -1856,6 +1856,34 @@ function zcodeLegacyLauncherPath(settingsFile: string): string {
   return path.join(path.dirname(expandHome(settingsFile)), ZCODE_LEGACY_LAUNCHER);
 }
 
+/**
+ * `hooks` keys ZCode's schema accepts, which the heal below must therefore keep.
+ *
+ * `enabled` and `events` are the two keys TeamAI itself writes. `maxOutputBytes`
+ * is a documented ZCode hook setting (default `32768`) capping the complete JSON
+ * hook response, so a team with large rule payloads may have raised it by hand —
+ * reconciling used to classify it as unknown and delete it, silently resetting
+ * the cap to the default on every `hooks inject` / `pull` / `init` (#1049).
+ *
+ * Everything outside this set is still healed away: ZCode rejects the WHOLE
+ * hooks block on an unrecognized key, which stops every hook from firing.
+ */
+const ZCODE_HOOK_KEYS = new Set(['enabled', 'events', 'maxOutputBytes']);
+
+/**
+ * True when the hooks block still holds something the heal must drop: a key
+ * ZCode does not know, or a `maxOutputBytes` that is not the byte count its
+ * schema expects. A typo is not worth preserving — keeping it would keep the
+ * whole block invalid, which is the failure the heal exists to prevent.
+ */
+function isUnknownHookKey(key: string, value: unknown): boolean {
+  if (!ZCODE_HOOK_KEYS.has(key)) return true;
+  if (key === 'maxOutputBytes') {
+    return !(typeof value === 'number' && Number.isInteger(value) && value > 0);
+  }
+  return false;
+}
+
 async function reconcileZcodeFormat(
   settingsPath: string,
   tool: string,
@@ -1904,7 +1932,7 @@ async function reconcileZcodeFormat(
   // WHOLE BLOCK on any unrecognized key (observed: `config_file_invalid —
   // hooks: Unrecognized key: "description"` → hookCount 0 → nothing fires).
   // Heal the config by keeping only the keys the schema knows about.
-  const unknownHookKeys = Object.keys(cfg.hooks).filter((k) => k !== 'enabled' && k !== 'events');
+  const unknownHookKeys = Object.keys(cfg.hooks).filter((k) => isUnknownHookKey(k, cfg.hooks![k]));
   if (unknownHookKeys.length > 0) {
     for (const k of unknownHookKeys) delete cfg.hooks[k];
     changed = true;
