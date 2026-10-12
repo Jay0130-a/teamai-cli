@@ -1870,3 +1870,49 @@ describe('mr-hint agent language (#1014)', () => {
     }
   });
 });
+
+describe('mr-hint honours the share gate (#988)', () => {
+  it('stays silent while recall is off, so one switch silences the Stop reminder and the MR hint alike', async () => {
+    const handler = buildHandlerRegistry().find((r) => r.handler.name === 'mr-hint')!.handler;
+    // recall off: `teamai skill get share` refuses here, so the hint would send
+    // the member to a workflow the team turned off — the same gate the Stop
+    // reminder already obeys (#747).
+    mockAutoDetectInit.mockResolvedValueOnce({
+      localConfig: { repo: { localPath: '/tmp', remote: '' }, username: 'test', scope: 'user' },
+      teamConfig: { team: 'test', repo: '', toolPaths: {} },
+    });
+    mockMrHintOutput.mockClear();
+
+    const result = await handler.execute({ session_id: 'mr1', cwd: '/x' }, 'claude', null);
+    expect(result).toBeNull();
+    expect(mockMrHintOutput).not.toHaveBeenCalled();
+  });
+
+  it('still produces the hint while recall is on', async () => {
+    const handler = buildHandlerRegistry().find((r) => r.handler.name === 'mr-hint')!.handler;
+    mockAutoDetectInit.mockResolvedValueOnce({
+      localConfig: { repo: { localPath: '/tmp', remote: '' }, username: 'test', scope: 'user' },
+      teamConfig: { team: 'test', repo: '', toolPaths: {}, sharing: { recall: { enabled: true } } },
+    });
+    mockMrHintOutput.mockClear();
+    mockMrHintOutput.mockResolvedValueOnce('{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"hi"}}');
+
+    const result = await handler.execute({ session_id: 'mr2', cwd: '/x' }, 'claude', null);
+    expect(mockMrHintOutput).toHaveBeenCalledOnce();
+    expect(result).toContain('additionalContext');
+  });
+
+  it('honours a member override that turns recall back on against the team default', async () => {
+    const handler = buildHandlerRegistry().find((r) => r.handler.name === 'mr-hint')!.handler;
+    mockAutoDetectInit.mockResolvedValueOnce({
+      localConfig: { repo: { localPath: '/tmp', remote: '' }, username: 'test', scope: 'user', recallEnabled: true },
+      teamConfig: { team: 'test', repo: '', toolPaths: {}, sharing: { recall: { enabled: false } } },
+    });
+    mockMrHintOutput.mockClear();
+    mockMrHintOutput.mockResolvedValueOnce('{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"hi"}}');
+
+    const result = await handler.execute({ session_id: 'mr3', cwd: '/x' }, 'claude', null);
+    expect(mockMrHintOutput).toHaveBeenCalledOnce();
+    expect(result).toContain('additionalContext');
+  });
+});

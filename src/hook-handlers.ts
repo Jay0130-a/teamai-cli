@@ -809,7 +809,16 @@ const todowriteHintHandler: HookHandler = {
 
 const mrHintHandler: HookHandler = {
   name: 'mr-hint',
-  async execute(_stdin, _tool, config) {
+  async execute(stdin, tool, config) {
+    // The hint routes to `teamai import --from-mr`, which publishes a learning
+    // the way `share`/contribute does, so it is withheld wherever the share gate
+    // blocks it — exactly as the Stop reminder is (#747). One switch
+    // (`sharing.recall.enabled: false`) must silence both; before this the
+    // SessionStart hint still told members to import (#988).
+    const { contributeHintAllowed } = await import('./skill-content.js');
+    const { hookScopeDir } = await import('./dashboard-collector.js');
+    if (!(await contributeHintAllowed(await hookScopeDir(stdin, tool)))) return null;
+
     const { computeMrHintOutput } = await import('./mr-hint.js');
     return computeMrHintOutput(await teamAgentLanguage(config));
   },
