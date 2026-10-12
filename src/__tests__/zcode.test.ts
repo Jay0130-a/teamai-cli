@@ -109,6 +109,11 @@ describe('ZCode support', () => {
         );
         expect(vbs).toContain('WScript.Arguments(0)');
         expect(vbs).not.toContain('""teamai hook-dispatch');
+        // The dispatch's stdout is the channel the team-rules SessionStart
+        // handler delivers project rules on, so the launcher must replay it
+        // rather than swallow it (`>nul` dropped it entirely, #1030).
+        expect(vbs).toContain('WScript.StdOut');
+        expect(vbs).not.toContain('>nul 2>&1');
 
         // A deleted/quarantined launcher must not be reported as installed:
         // the entries are dead without the script.

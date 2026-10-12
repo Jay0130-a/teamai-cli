@@ -1740,20 +1740,28 @@ async function reconcileZcodeFormat(
   // Hidden launcher: wscript.exe is a GUI-subsystem binary, so hook runs don't
   // flash a black box over the desktop, and the spool file keeps the STDIN
   // payload contract intact (ZCode's JSON reaches hook-dispatch even though
-  // WScript.Shell.Run cannot forward a live stdin pipe).
+  // WScript.Shell.Run cannot forward a live stdin pipe). The dispatch's stdout
+  // is spooled too and replayed on WScript.StdOut: `>nul 2>&1` used to discard
+  // it, which silently dropped the team-rules SessionStart output (ZCode's only
+  // project-rules channel). stderr stays discarded, as before.
   const vbsScript = [
-    "' TeamAI hook dispatcher - hidden, timeout-bounded, stdin-preserving.",
+    "' TeamAI hook dispatcher - hidden, timeout-bounded, stdin/stdout-preserving.",
     'Option Explicit',
-    'Dim sh, fso, spool, f',
+    'Dim sh, fso, spool, out, f',
     'Set sh = CreateObject("WScript.Shell")',
     'Set fso = CreateObject("Scripting.FileSystemObject")',
     'spool = fso.GetSpecialFolder(2) & "\\teamai-hook-" & fso.GetTempName',
+    'out = fso.GetSpecialFolder(2) & "\\teamai-hook-" & fso.GetTempName',
     'Set f = fso.CreateTextFile(spool, True)',
     'On Error Resume Next',
     'f.Write WScript.StdIn.ReadAll()',
     'f.Close',
-    'sh.Run "cmd /d /s /c """ & WScript.Arguments(0) & " < """ & spool & """ >nul 2>&1""", 0, True',
+    'sh.Run "cmd /d /s /c """ & WScript.Arguments(0) & " < """ & spool & """ > """ & out & """ 2>nul""", 0, True',
     'fso.DeleteFile spool, True',
+    'If fso.FileExists(out) Then',
+    '  WScript.StdOut.Write fso.OpenTextFile(out, 1).ReadAll()',
+    '  fso.DeleteFile out, True',
+    'End If',
   ].join('\r\n');
   if (opts.removeAll) {
     // Unconditional: after a normal inject the file equals the template, so a
