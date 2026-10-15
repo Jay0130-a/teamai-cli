@@ -14,6 +14,7 @@ import { readNetrcToken, writeNetrcToken } from '../providers/gitcode/gitcode-ap
 import { getRepoCacheDir } from '../utils/repo-cache.js';
 import { getCacheRoot } from '../utils/cache-index.js';
 import { defaultAllowedRoots } from '../utils/path-safety.js';
+import { getUserHome } from '../utils/home.js';
 
 const GITCODE_HOST = 'gitcode.com';
 
@@ -67,4 +68,56 @@ describe('user home resolution', () => {
   it('allows the home it actually writes to by default', () => {
     expect(defaultAllowedRoots()).toContain(home);
   });
+
+  it('falls back to a token left in the platform home by an older release', () => {
+    // Before this change `~/.netrc` was read from `os.homedir()`, so a user
+    // whose HOME points elsewhere already has their token in that file.
+    // Upgrading must not report "unauthenticated" and make them paste it again.
+    fs.writeFileSync(
+      path.join(platformHome, '.netrc'),
+      `machine ${GITCODE_HOST} login oauth2 password FROM-PLATFORM-HOME\n`,
+    );
+
+    expect(readNetrcToken()).toBe('FROM-PLATFORM-HOME');
+  });
+
+  it('prefers the current home over the legacy one when both hold a token', () => {
+    fs.writeFileSync(
+      path.join(platformHome, '.netrc'),
+      `machine ${GITCODE_HOST} login oauth2 password STALE\n`,
+    );
+    fs.writeFileSync(
+      path.join(home, '.netrc'),
+      `machine ${GITCODE_HOST} login oauth2 password CURRENT\n`,
+    );
+
+    expect(readNetrcToken()).toBe('CURRENT');
+  });
+
+  it('re-authenticating consolidates onto the current home', () => {
+    fs.writeFileSync(
+      path.join(platformHome, '.netrc'),
+      `machine ${GITCODE_HOST} login oauth2 password STALE\n`,
+    );
+
+    writeNetrcToken('FRESH');
+
+    expect(readNetrcToken()).toBe('FRESH');
+    expect(fs.readFileSync(path.join(home, '.netrc'), 'utf-8')).toContain('FRESH');
+  });
+
+  it.skipIf(process.platform !== 'win32')(
+    'normalizes a Git Bash HOME before anything joins onto it',
+    () => {
+      // Git Bash exports HOME=/c/Users/alice, which native path handling reads
+      // as a drive-root path (\c\Users\alice) unless it is converted first.
+      process.env.HOME = '/c/Users/alice';
+      delete process.env.USERPROFILE;
+
+      expect(getUserHome()).toBe('C:\\Users\\alice');
+      expect(getRepoCacheDir('github', 'acme', 'widget')).toBe(
+        path.join('C:\\Users\\alice', '.teamai', 'cache', 'repos', 'github', 'acme', 'widget'),
+      );
+    },
+  );
 });

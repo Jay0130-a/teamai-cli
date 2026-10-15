@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { ensureDir } from '../../utils/fs.js';
-import { getUserHome } from '../../utils/home.js';
+import { getUserHome, legacyUserHome } from '../../utils/home.js';
 import { log, spinner } from '../../utils/logger.js';
 import { isInteractive } from '../../utils/prompt.js';
 import { getTeamaiHomeDir } from '../../types.js';
@@ -357,15 +357,23 @@ export function ensureAuthenticated(): string {
  */
 export function gfGetOAuthToken(): string | null {
   try {
-    const netrcPath = path.join(getUserHome(), '.netrc');
-    if (!fs.existsSync(netrcPath)) return null;
+    // `gf` wrote this file when `~` still resolved to `os.homedir()`, so a user
+    // whose HOME points elsewhere keeps working after the upgrade: read the
+    // current location first, then the legacy one.
+    const candidates = [path.join(getUserHome(), '.netrc')];
+    const legacy = legacyUserHome();
+    if (legacy) candidates.push(path.join(legacy, '.netrc'));
 
-    const content = fs.readFileSync(netrcPath, 'utf-8');
-    // Match: machine git.woa.com ... password <TOKEN>
-    const match = content.match(
-      /machine\s+git\.woa\.com\s+.*?password\s+(\S+)/,
-    );
-    return match?.[1] ?? null;
+    for (const netrcPath of candidates) {
+      if (!fs.existsSync(netrcPath)) continue;
+      const content = fs.readFileSync(netrcPath, 'utf-8');
+      // Match: machine git.woa.com ... password <TOKEN>
+      const match = content.match(
+        /machine\s+git\.woa\.com\s+.*?password\s+(\S+)/,
+      );
+      if (match?.[1]) return match[1];
+    }
+    return null;
   } catch {
     return null;
   }
