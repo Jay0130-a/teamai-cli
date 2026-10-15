@@ -94,6 +94,18 @@ describe('user home resolution', () => {
     expect(readNetrcToken()).toBe('CURRENT');
   });
 
+  it('keeps looking when the current netrc cannot be read', () => {
+    // An unreadable `$HOME/.netrc` (here: a directory) must not abort the
+    // search — the readable legacy copy still holds the token.
+    fs.mkdirSync(path.join(home, '.netrc'));
+    fs.writeFileSync(
+      path.join(platformHome, '.netrc'),
+      `machine ${GITCODE_HOST} login oauth2 password FROM-PLATFORM-HOME\n`,
+    );
+
+    expect(readNetrcToken()).toBe('FROM-PLATFORM-HOME');
+  });
+
   it('re-authenticating consolidates onto the current home', () => {
     fs.writeFileSync(
       path.join(platformHome, '.netrc'),

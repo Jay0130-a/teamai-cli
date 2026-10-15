@@ -82,9 +82,19 @@ function netrcPath(): string {
  * in the older location, so reads fall back to it rather than reporting
  * "unauthenticated" and making them paste the token again. Writes always target
  * `netrcPath()`, so re-authenticating consolidates onto the current home.
+ *
+ * Returns an empty list when no home resolves at all — the same "no credential
+ * found" outcome the caller had before, rather than an exception from a getter
+ * that used to swallow everything.
  */
 function netrcReadPaths(): string[] {
-  const paths = [netrcPath()];
+  let current: string;
+  try {
+    current = netrcPath();
+  } catch {
+    return [];
+  }
+  const paths = [current];
   const legacy = legacyUserHome();
   if (legacy) paths.push(path.join(legacy, '.netrc'));
   return paths;
