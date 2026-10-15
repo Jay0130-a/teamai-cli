@@ -370,6 +370,11 @@ export function gfGetOAuthToken(): string | null {
 
   for (const netrcPath of candidates) {
     try {
+      // `existsSync` first, as this reader has always done: it keeps the
+      // "no ~/.netrc" case a cheap no-op rather than a thrown ENOENT. A file
+      // that exists but cannot be read still falls through to the next
+      // candidate via the `catch`.
+      if (!fs.existsSync(netrcPath)) continue;
       const content = fs.readFileSync(netrcPath, 'utf-8');
       // Match: machine git.woa.com ... password <TOKEN>
       const match = content.match(
