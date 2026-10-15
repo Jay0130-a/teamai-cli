@@ -3,6 +3,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { getUserHome, expandHome } from './utils/home.js';
 import { log } from './utils/logger.js';
+import type { WorkspaceChildren } from './workspace-children.js';
 
 const DEFAULT_COPILOT_HOME = '.copilot';
 const COPILOT_USER_MCP_CONFIG = 'mcp-config.json';
@@ -61,6 +62,28 @@ export const ToolPathsSchema = z.object({
 export const ScopeEnum = z.enum(['user', 'project']);
 export type Scope = z.infer<typeof ScopeEnum>;
 
+/**
+ * The install scope a member names in `--scope` and in config.yaml (#1099).
+ * `workspace` is the current name of the scope rooted at a directory; `project`
+ * is its older name and stays accepted. Both parse to the internal `project`,
+ * so code compares against one value; the serializer writes `workspace`.
+ */
+export const InstallScopeSchema = z
+  .enum(['user', 'workspace', 'project'])
+  .transform((scope): Scope => (scope === 'workspace' ? 'project' : scope));
+
+/** The value of a `--scope` option. Every command that takes one reads it here. */
+export function parseInstallScope(value: string): Scope {
+  const parsed = InstallScopeSchema.safeParse(value);
+  if (!parsed.success) throw new Error(`Invalid scope "${value}". Use "workspace" or "user".`);
+  return parsed.data;
+}
+
+/** The name a member sees and config.yaml stores for an install scope. */
+export function installScopeName(scope: Scope): 'user' | 'workspace' {
+  return scope === 'project' ? 'workspace' : scope;
+}
+
 // ─── Team config (teamai.yaml) ───────────────────────────
 
 export const SharingConfigSchema = z.object({
@@ -103,6 +126,15 @@ export const SharingConfigSchema = z.object({
      *  knowledge sharing through their own review flow can turn the nudge off
      *  without disabling the rest of the Stop hook (update check, votes sync,
      *  dashboard reporting). */
+    enabled: z.boolean().default(true),
+  }).optional(),
+  // Optional (not .default) so existing TeamaiConfig literals stay valid; use
+  // isMrHintEnabled() for the resolved view.
+  mrHint: z.object({
+    /** Team default: whether the SessionStart hook tells members about MRs the
+     *  team merged recently. Kept separate from `contributeHint` (#988): a team
+     *  that routes knowledge sharing through its own review flow can drop the
+     *  MR summary while keeping the Stop hook's nudge, or the other way round. */
     enabled: z.boolean().default(true),
   }).optional(),
   // Optional (not .default) so existing TeamaiConfig literals stay valid, AND so
@@ -253,6 +285,23 @@ export function isContributeHintEnabled(
   if (env.TEAMAI_CONTRIBUTE_HINT_DISABLED === '1') return false;
   if (localConfig.contributeHintEnabled !== undefined) return localConfig.contributeHintEnabled;
   return teamConfig.sharing?.contributeHint?.enabled ?? true;
+}
+
+/**
+ * Resolve whether the SessionStart MR hint is enabled: env kill switch >
+ * user override > team config > default (true).
+ *
+ * Deliberately not folded into isContributeHintEnabled: #988 keeps the MR hint
+ * separate from the share workflow, so neither switch may turn the other off.
+ */
+export function isMrHintEnabled(
+  localConfig: { mrHintEnabled?: boolean },
+  teamConfig: { sharing?: { mrHint?: { enabled?: boolean } } },
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  if (env.TEAMAI_MR_HINT_DISABLED === '1') return false;
+  if (localConfig.mrHintEnabled !== undefined) return localConfig.mrHintEnabled;
+  return teamConfig.sharing?.mrHint?.enabled ?? true;
 }
 
 /** Resolve whether pull reports usage stats: user override > team config > default (true). */
@@ -750,8 +799,8 @@ export const LocalConfigSchema = z.object({
   provider: ProviderNameSchema.optional(),
   updatePolicy: z.enum(['auto', 'prompt', 'skip']).optional(),
   // Read-compat default for historical configs that omit `scope` (pre-project era).
-  // NOT the write default for `teamai init` — init defaults to project (issue #250).
-  scope: ScopeEnum.default('user'),
+  // NOT the write default for `teamai init` — init defaults to workspace (issue #250).
+  scope: InstallScopeSchema.default('user'),
   primaryRole: z.string().min(1).optional(),
   additionalRoles: z.array(z.string()).default([]),
   /**
@@ -779,6 +828,8 @@ export const LocalConfigSchema = z.object({
   gitExcludeEnabled: z.boolean().optional(),
   /** User-level override for the share-learnings hint. When set, takes precedence over team config. */
   contributeHintEnabled: z.boolean().optional(),
+  /** User-level override for the SessionStart MR hint. When set, takes precedence over team config. */
+  mrHintEnabled: z.boolean().optional(),
   /** Per-machine override of the team's `usageReport`. When set, takes
    *  precedence over the team config. Undefined defers to the team. */
   usageReportEnabled: z.boolean().optional(),
@@ -803,6 +854,10 @@ export const LocalConfigSchema = z.object({
   toolRoots: z.record(z.string(), z.string()).optional(),
   /** Tools explicitly excluded from all teamai sync (set by `uninstall --agent`). Removed again by `init --agent`. */
   disabledAgents: z.array(z.string()).optional(),
+  /** Per-machine tool selection for locally executed workflow prompt steps. */
+  workflows: z.object({
+    tools: z.record(z.string(), z.string().min(1)).default({}),
+  }).optional(),
   /**
    * Per-machine map from a gateway/proxy model alias to a known Claude model
    * name, so cost/cache estimation works when the transcript records an opaque
@@ -832,8 +887,16 @@ export const LocalConfigSchema = z.object({
  * migration could not read the roles manifest, so whether this role-less config
  * holds a role is unknown for this run; `activeRoleIds` then matches no
  * role-scoped entry instead of every one. The next load re-decides it.
+ *
+ * `children` is runtime-only too: the children a workspace read this run
+ * (`readWorkspaceChildren`, #913). It is never written, so a workspace's
+ * config keeps its own selection only.
  */
-export type LocalConfig = z.infer<typeof LocalConfigSchema> & { dataHome?: string; roleUnresolved?: true };
+export type LocalConfig = z.infer<typeof LocalConfigSchema> & {
+  dataHome?: string;
+  roleUnresolved?: true;
+  children?: WorkspaceChildren;
+};
 export type LocalConfigInput = z.input<typeof LocalConfigSchema>;
 
 // ─── Local state (~/.teamai/state.json) ────────────────────
@@ -965,6 +1028,13 @@ export const StateSchema = z.object({
     agentModels: z.record(z.string(), z.record(z.string(), RecordedAgentModelSchema)).optional(),
     gitExcludePaths: z.record(z.string(), z.array(z.string())).optional(),
     rootsSeeded: z.boolean().optional(),
+    /** The children a workspace was last delivered with (`WorkspaceChildren.fingerprint`, #913). */
+    children: z.string().optional(),
+    /**
+     * The `claudeMdExcludes` entries teamai wrote into this checkout's
+     * `.claude/settings.local.json` for the workspaces above it (#913).
+     */
+    claudeMdExcludes: z.array(z.string()).optional(),
   })).optional(),
   /**
    * The exclude files holding each git exclude owner's block that this
@@ -2077,6 +2147,8 @@ export interface SearchIndex {
   /** Per-domain document-frequency maps, so unrelated knowledge domains do not
    *  change the IDF score of an entry. Missing on indexes that need rebuilding. */
   dfByDomain?: Partial<Record<KnowledgeDomain, Record<string, number>>>;
+  /** The workspace children this index was built for (#913), absent outside a workspace with children. */
+  children?: string;
 }
 
 /** Per-user vote file (votes/<user>.yaml). */

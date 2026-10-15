@@ -23,9 +23,9 @@ Generated: do not edit by hand. Regenerate with
   - `--provider <name>` — Git provider for the team repo on this machine: tgit, github, cnb, gitlab, gitcode, or git. Skips auto-detection. `git` uses your existing Git auth and needs no platform token, but opens no PR/MR.
   - `--self` — Single-repo mode: the current git repo is the team repo (equivalent to `teamai init .`). Knowledge lives on main under .teamai/; reports go to the teamai-reports orphan branch.
   - `--token <key>` — API key for HTTP team repo / status reporting (stored 0600, never committed). Also reads TEAMAI_API_TOKEN.
-  - `--scope <scope>` — Install scope: project (default, <cwd>/.teamai + <cwd>/.claude) or user (~/.teamai + ~/.claude)
-  - `--inherit-user-scope` — In project scope, also sync safe user-scope resources, load its env variables (not its secrets) in the project, and search its knowledge
-  - `--no-inherit-user-scope` — Disable user-scope inheritance for this project
+  - `--scope <scope>` — Install scope: workspace (default, <cwd>/.teamai + <cwd>/.claude) or user (~/.teamai + ~/.claude); project is the older name for workspace
+  - `--inherit-user-scope` — In workspace scope, also sync safe user-scope resources, load its env variables (not its secrets) in the workspace, and search its knowledge
+  - `--no-inherit-user-scope` — Disable user-scope inheritance for this workspace
   - `--role <id>` — Primary role ID (e.g. hai_dev) for non-interactive setup
   - `--project <ids>` — Active logical project(s) from manifest/projects.yaml (comma-separated); scopes which project resources and learnings this directory syncs. Pass "all" to activate every project the manifest declares (a snapshot taken now)
   - `--agent <name>` — AI tools to set up (e.g. claude, codex, cursor, codebuddy, workbuddy, dsh). Repeatable or comma-separated. In single-repo mode, selects which tool dirs to create; a custom agent defined only in teamai.yaml's toolPaths also gets its root created here (git-backed init only — an HTTP init has no local teamai.yaml to read custom paths from). Omit for an interactive picker. Additive on repeated runs.
@@ -42,7 +42,7 @@ Generated: do not edit by hand. Regenerate with
 
 ## pull
 
-- `teamai pull` — Pull team resources and inject into local AI tools. Team docs land in sharing.docs.localDir: .teamai/docs/ in a project by default, a hidden directory, so search that path directly
+- `teamai pull` — Pull team resources and inject into local AI tools. Team docs land in sharing.docs.localDir: .teamai/docs/ in a workspace by default, a hidden directory, so search that path directly
   - `--silent` — Silent mode (for hooks)
   - `--force` — Force full sync even if repo is unchanged
 
@@ -217,6 +217,18 @@ Generated: do not edit by hand. Regenerate with
     - `--global` — Remove the value set for every team on this machine instead
   - `teamai env exec <command...>` — Run a command with this directory's team env variables and secrets (put -- before the command)
 
+## workflow
+
+- `teamai workflow` — Run a validated workflow from workflows/<name>.yaml
+  - `teamai workflow start <name>` — Create a run. With --driver local, execute command and prompt steps in this process.
+    - `--driver <kind>` — Run the workflow in this process. Only local is available.
+    - `--tools <list>` — Override local prompt tools for this run, as comma-separated name=tool pairs
+    - `--inputs <json>` — Values for the inputs the workflow declares, as a JSON object, for example {"issue":42}. Every declared input is required.
+  - `teamai workflow next <run>` — Lease the next pending step of a run. Prints a JSON envelope.
+    - `--json <payload>` — Driver identity, for example {"driver":{"kind":"local","machine":"host","workspace":"/work"}}
+  - `teamai workflow report <run>` — Report the outcome of a leased step. Prints a JSON envelope.
+    - `--json <payload>` — attempt, revision, outcome (success, failed, or released), and driver
+
 ## hooks
 
 - `teamai hooks` — Manage teamai hooks in AI tool settings
@@ -276,13 +288,55 @@ Generated: do not edit by hand. Regenerate with
 
 ## session
 
-- `teamai session` — Record and inspect coding-session summaries
+- `teamai session` — Session recording, cross-platform migration, and team sync
   - `teamai session save` — Record a privacy-scrubbed summary of a coding session to a local monthly log
     - `--session-id <id>` — Session to record (default: the agent's session, e.g. $CLAUDE_CODE_SESSION_ID, or the most recent)
     - `--push` — Also push the summary to the team repo (feeds `teamai digest`)
     - `--force` — Push even if the session is not flagged as valuable
     - `--include-prompt` — Include the redacted first-prompt line in the pushed summary (default: off)
-    - `--scope <scope>` — Config scope for --push: user | project (default: auto-detect)
+    - `--scope <scope>` — Config scope for --push: user | workspace (default: auto-detect)
+  - `teamai session platforms` — List supported and installed AI agent platforms
+  - `teamai session migrate [sessionId]` — Migrate a session from one platform to another (or archive to same platform)
+    - `-s, --source <platform>` — Source platform (e.g. claude-code, codebuddy)
+    - `-t, --target <platform>` — Target platform
+    - `--cwd <path>` — Working directory (defaults to current directory)
+    - `--target-cwd <path>` — Override cwd for the target session
+    - `--push` — Also push the migrated session to the team repo
+    - `--repo-root <path>` — Team repo root (for --push)
+    - `--scrub` — Redact secrets (tokens/keys/passwords) from the session before writing it
+    - `--all` — Migrate every session from source (not just the 5 most recent)
+    - `--limit <n>` — Max sessions to migrate (only caps --all; ignored otherwise)
+    - `-y, --yes` — Skip confirmation prompts, including archiving unredacted transcripts
+  - `teamai session push` — Push local sessions to the team repo
+    - `--source <platform>` — Source platform to read sessions from
+    - `--repo-root <path>` — Team repo root (defaults to cwd)
+    - `--cwd <path>` — Working directory (defaults to current directory)
+    - `--limit <n>` — Max sessions to push (default: 5; ignored with --all)
+    - `--all` — Push every session of the platform across all workspace directories (ignores --limit)
+    - `-y, --yes` — Skip confirmation prompts, including archiving unredacted transcripts (--all)
+    - `--scrub` — Redact secrets before archiving (archived sessions are team-readable)
+  - `teamai session pull` — Pull team sessions for the current project
+    - `--repo-root <path>` — Team repo root (defaults to cwd)
+    - `--cwd <path>` — Working directory (defaults to current directory)
+    - `--all` — Rebuild indexes for every repo in the team repo (not just the current project)
+  - `teamai session list` — List team sessions for the current project
+    - `--repo-root <path>` — Team repo root (defaults to cwd)
+    - `--cwd <path>` — Working directory (defaults to current directory)
+    - `--author <name>` — Filter by author
+    - `--all` — List sessions across all projects in the team repo (not just the current one)
+  - `teamai session resume <sessionName>` — Restore a team session to a local platform
+    - `--platform <platform>` — Target platform to restore into
+    - `--repo-root <path>` — Team repo root (defaults to cwd)
+    - `--cwd <path>` — Working directory for the restored session (defaults to current directory)
+    - `--author <name>` — Author of the session (if ambiguous)
+  - `teamai session search <query>` — Search team session content
+    - `--repo-root <path>` — Team repo root (defaults to cwd)
+    - `--cwd <path>` — Working directory (defaults to current directory)
+    - `--limit <n>` — Max results (default: 10)
+    - `--all` — Search across all projects (not just current)
+  - `teamai session rollback <sessionId>` — Rollback a migration (delete the target session)
+    - `--platform <platform>` — Platform where the session was written
+    - `--cwd <cwd>` — Only roll back the copy under this project path (default: all)
 
 ## digest
 
@@ -306,7 +360,7 @@ Generated: do not edit by hand. Regenerate with
   - `--title <title>` — Title for the contribution document
   - `--namespace <ns>` — Write to an active learnings namespace (default: the only active namespace, or the shared root when none or several are active)
   - `--session-id <id>` — Session ID for dedup tracking
-  - `--scope <scope>` — Target scope: user or project
+  - `--scope <scope>` — Target scope: user or workspace
 
 ## recall
 
